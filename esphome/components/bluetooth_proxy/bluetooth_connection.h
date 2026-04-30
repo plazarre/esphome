@@ -41,6 +41,10 @@ class BluetoothConnection final : public esp32_ble_client::BLEClientBase {
   void log_connection_warning_(const char *operation, esp_err_t err);
   void log_gatt_not_connected_(const char *action, const char *type);
   void log_gatt_operation_error_(const char *operation, uint16_t handle, esp_gatt_status_t status);
+  // Logs the GATT op failure, forwards send_gatt_error to the API client, and — if the status
+  // indicates the local GATT host stack is in an unrecoverable internal state — initiates a
+  // disconnect so the slot can be freed. See is_unrecoverable_gatt_error_ in the .cpp.
+  void check_and_recover_gatt_error_(const char *operation, uint16_t handle, esp_gatt_status_t status);
   esp_err_t check_and_log_error_(const char *operation, esp_err_t err);
 
   // Memory optimized layout for 32-bit systems

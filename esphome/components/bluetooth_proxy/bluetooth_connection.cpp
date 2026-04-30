@@ -349,6 +349,32 @@ void BluetoothConnection::log_gatt_operation_error_(const char *operation, uint1
            operation, handle, status);
 }
 
+// GATT statuses that indicate the local Bluedroid host stack is in an unrecoverable
+// internal state for this connection. The most common producer in production is
+// ESP_GATT_ERROR (0x85 / 133), which Bluedroid synthesizes when an in-flight GATT
+// operation times out internally (~20 s). Once one of these fires the slot keeps
+// reporting CONNECTED/ESTABLISHED but rejects every subsequent operation until the
+// connection is closed and reopened — observed as "Connection request ignored,
+// state: CONNECTING" on retries from HA. See HA core #132018 and ESPHome #3761 for
+// matching reports across ESP32 variants.
+static bool is_unrecoverable_gatt_error_(esp_gatt_status_t status) {
+  return status == ESP_GATT_NO_RESOURCES        // 0x80
+         || status == ESP_GATT_INTERNAL_ERROR   // 0x81
+         || status == ESP_GATT_WRONG_STATE      // 0x82
+         || status == ESP_GATT_ERROR;           // 0x85 (133)
+}
+
+void BluetoothConnection::check_and_recover_gatt_error_(const char *operation, uint16_t handle,
+                                                        esp_gatt_status_t status) {
+  this->log_gatt_operation_error_(operation, handle, status);
+  this->proxy_->send_gatt_error(this->address_, handle, status);
+  if (is_unrecoverable_gatt_error_(status)) {
+    ESP_LOGW(TAG, "[%d] [%s] Host stack error 0x%02X during %s — disconnecting to free slot",
+             this->connection_index_, this->address_str(), status, operation);
+    this->disconnect();
+  }
+}
+
 esp_err_t BluetoothConnection::check_and_log_error_(const char *operation, esp_err_t err) {
   if (err != ESP_OK) {
     this->log_connection_warning_(operation, err);
@@ -406,8 +432,7 @@ bool BluetoothConnection::gattc_event_handler(esp_gattc_cb_event_t event, esp_ga
     case ESP_GATTC_READ_DESCR_EVT:
     case ESP_GATTC_READ_CHAR_EVT: {
       if (param->read.status != ESP_GATT_OK) {
-        this->log_gatt_operation_error_("reading char/descriptor", param->read.handle, param->read.status);
-        this->proxy_->send_gatt_error(this->address_, param->read.handle, param->read.status);
+        this->check_and_recover_gatt_error_("reading char/descriptor", param->read.handle, param->read.status);
         break;
       }
       auto *api_connection = this->proxy_->get_api_connection();
@@ -423,8 +448,7 @@ bool BluetoothConnection::gattc_event_handler(esp_gattc_cb_event_t event, esp_ga
     case ESP_GATTC_WRITE_CHAR_EVT:
     case ESP_GATTC_WRITE_DESCR_EVT: {
       if (param->write.status != ESP_GATT_OK) {
-        this->log_gatt_operation_error_("writing char/descriptor", param->write.handle, param->write.status);
-        this->proxy_->send_gatt_error(this->address_, param->write.handle, param->write.status);
+        this->check_and_recover_gatt_error_("writing char/descriptor", param->write.handle, param->write.status);
         break;
       }
       auto *api_connection = this->proxy_->get_api_connection();
@@ -438,9 +462,8 @@ bool BluetoothConnection::gattc_event_handler(esp_gattc_cb_event_t event, esp_ga
     }
     case ESP_GATTC_UNREG_FOR_NOTIFY_EVT: {
       if (param->unreg_for_notify.status != ESP_GATT_OK) {
-        this->log_gatt_operation_error_("unregistering notifications", param->unreg_for_notify.handle,
-                                        param->unreg_for_notify.status);
-        this->proxy_->send_gatt_error(this->address_, param->unreg_for_notify.handle, param->unreg_for_notify.status);
+        this->check_and_recover_gatt_error_("unregistering notifications", param->unreg_for_notify.handle,
+                                            param->unreg_for_notify.status);
         break;
       }
       auto *api_connection = this->proxy_->get_api_connection();
@@ -454,9 +477,8 @@ bool BluetoothConnection::gattc_event_handler(esp_gattc_cb_event_t event, esp_ga
     }
     case ESP_GATTC_REG_FOR_NOTIFY_EVT: {
       if (param->reg_for_notify.status != ESP_GATT_OK) {
-        this->log_gatt_operation_error_("registering notifications", param->reg_for_notify.handle,
-                                        param->reg_for_notify.status);
-        this->proxy_->send_gatt_error(this->address_, param->reg_for_notify.handle, param->reg_for_notify.status);
+        this->check_and_recover_gatt_error_("registering notifications", param->reg_for_notify.handle,
+                                            param->reg_for_notify.status);
         break;
       }
       auto *api_connection = this->proxy_->get_api_connection();
