@@ -204,7 +204,14 @@ void ESP32BLETracker::loop() {
       this->update_coex_preference_(false);
     }
 #endif
-    if (this->scan_continuous_) {
+    // EXPERIMENT (5/1): also gate scan-restart on !counts.active. While any
+    // client is CONNECTED/ESTABLISHED, leave the scanner idle so the BT radio
+    // doesn't spend cycles scanning + the proxy doesn't stream advertisements
+    // to HA over WiFi (which competes with the connection's own GATT traffic
+    // for the shared 2.4 GHz radio). Bare-metal Bluedroid (which works against
+    // this same lock at the same RSSI) doesn't scan while connected; this
+    // matches that behavior. Scan resumes once all connections tear down.
+    if (this->scan_continuous_ && !counts.active) {
       this->start_scan_(false);  // first = false
     }
   }
