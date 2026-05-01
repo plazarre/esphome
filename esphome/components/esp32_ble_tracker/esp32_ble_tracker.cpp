@@ -908,10 +908,20 @@ void ESP32BLETracker::try_promote_discovered_clients_() {
     if (this->scanner_state_ == ScannerState::RUNNING) {
       ESP_LOGD(TAG, "Stopping scan to make connection");
       this->stop_scan_();
-      // Don't wait for scan stop complete - promote immediately.
-      // This is safe because ESP-IDF processes BLE commands sequentially through its internal mailbox queue.
-      // This guarantees that the stop scan command will be fully processed before any subsequent connect command,
-      // preventing race conditions or overlapping operations.
+      // Wait for SCAN_STOP_COMPLETE before promoting. The previous "promote
+      // immediately" fast-path relied on ESP-IDF's command-mailbox serialization,
+      // but in practice promoting connect while the host stack is still draining
+      // the scan-stop creates a window where Bluedroid schedules a "Disconnect
+      // before connected" against the half-open client. The connection eventually
+      // completes ~20s later only to be torn down immediately, synthesizing
+      // status=133 against any in-flight GATT op and leaving the proxy slot
+      // stuck in DISCONNECTING for subsequent connect attempts (manifests as
+      // "ESP_GATTC_OPEN_EVT in DISCONNECTING state").
+      //
+      // Returning here lets loop() re-enter on the next iteration once
+      // gap_scan_stop_complete_() has set scanner_state_ to IDLE -- which
+      // increments state_version_, breaking the fast-path skip.
+      return;
     }
 
     ESP_LOGD(TAG, "Promoting client to connect");
